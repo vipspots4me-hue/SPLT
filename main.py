@@ -1,4 +1,3 @@
-```python
 import os
 import sys
 import time
@@ -2275,4 +2274,3 @@ st.write(
 while True:
 
     time.sleep(3600)
-```
