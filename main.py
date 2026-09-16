@@ -10,13 +10,14 @@ import urllib.request
 import urllib.error
 import zipfile
 import tarfile
+import socket
 from pathlib import Path
 
 import streamlit as st
 
 
 # ============================================================
-# SPMA - STREAMLIT + WARP SOCKS5
+# SPMA - STREAMLIT + OPTIONAL WARP SOCKS5
 # ============================================================
 
 BASE_DIR = Path("/mount/src/spma")
@@ -28,32 +29,52 @@ BASE_DIR = Path("/mount/src/spma")
 WARP_PROXY = "socks5h://127.0.0.1:40000"
 
 
-def configure_warp_proxy():
-    """
-    Configure WARP SOCKS5 for all applications that respect
-    standard proxy environment variables.
-
-    WARP daemon itself is NOT started here.
-    The container/runtime must provide:
-        127.0.0.1:40000
-    """
-
 def warp_proxy_available():
-    import socket
+    """Check whether WARP SOCKS5 listener exists."""
 
     try:
         sock = socket.create_connection(
             ("127.0.0.1", 40000),
             timeout=2,
         )
+
         sock.close()
+
         return True
 
     except Exception:
         return False
 
 
+def clear_proxy_environment():
+    """Remove proxy variables."""
+
+    for key in [
+        "ALL_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+    ]:
+        os.environ.pop(key, None)
+
+    os.environ["NO_PROXY"] = (
+        "127.0.0.1,"
+        "localhost,"
+        "0.0.0.0"
+    )
+
+    os.environ["no_proxy"] = os.environ["NO_PROXY"]
+
+
 def configure_warp_proxy():
+    """
+    Enable WARP only if the SOCKS5 listener is actually available.
+
+    If 127.0.0.1:40000 does not exist, all proxy variables are removed
+    so pip/git/urllib do not fail because of a dead SOCKS proxy.
+    """
 
     if warp_proxy_available():
 
@@ -79,38 +100,15 @@ def configure_warp_proxy():
 
         return True
 
-    # Remove broken proxy variables.
-    for key in [
-        "ALL_PROXY",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "all_proxy",
-        "http_proxy",
-        "https_proxy",
-    ]:
-
-        os.environ.pop(key, None)
+    clear_proxy_environment()
 
     logger.warning(
-        "WARP SOCKS5 is NOT available. "
+        "WARP SOCKS5 is NOT available on "
+        "127.0.0.1:40000. "
         "Using direct network connection."
     )
 
     return False
-
-    # Avoid accidentally bypassing local services.
-    os.environ["NO_PROXY"] = (
-        "127.0.0.1,"
-        "localhost,"
-        "0.0.0.0"
-    )
-
-    os.environ["no_proxy"] = os.environ["NO_PROXY"]
-
-    logger.info(
-        "WARP SOCKS5 proxy configured: %s",
-        WARP_PROXY,
-    )
 
 
 # ============================================================
@@ -178,11 +176,13 @@ BGUTIL_HOST = "127.0.0.1"
 
 BGUTIL_PORT = 4416
 
-BGUTIL_URL = f"http://{BGUTIL_HOST}:{BGUTIL_PORT}"
+BGUTIL_URL = (
+    f"http://{BGUTIL_HOST}:{BGUTIL_PORT}"
+)
 
 
 # ============================================================
-# TELEGRAM LOCK
+# TELEGRAM
 # ============================================================
 
 BOT_LOCK_FILE = "/tmp/spma_telegram_bot.lock"
@@ -232,10 +232,17 @@ logger = logging.getLogger("SPMA")
 # STREAMLIT SECRETS
 # ============================================================
 
-def get_secret(name: str, default: str = "") -> str:
+def get_secret(
+    name: str,
+    default: str = "",
+) -> str:
 
     try:
-        value = st.secrets.get(name, default)
+
+        value = st.secrets.get(
+            name,
+            default,
+        )
 
         if value is None:
             return default
@@ -243,6 +250,7 @@ def get_secret(name: str, default: str = "") -> str:
         return str(value).strip()
 
     except Exception:
+
         return os.environ.get(
             name,
             default,
@@ -566,6 +574,15 @@ def install_deno():
 
             return True
 
+        logger.warning(
+            "Existing Deno is invalid. Reinstalling."
+        )
+
+        try:
+            DENO_BIN.unlink()
+        except Exception:
+            pass
+
     logger.info(
         "Installing Deno %s...",
         DENO_VERSION,
@@ -602,7 +619,9 @@ def install_deno():
 
     try:
 
-        extracted = extract_dir / "deno"
+        extracted = (
+            extract_dir / "deno"
+        )
 
         if not extracted.exists():
 
@@ -661,6 +680,10 @@ def install_deno():
         )
 
         return True
+
+    logger.error(
+        "Deno verification failed."
+    )
 
     return False
 
@@ -877,6 +900,10 @@ def install_spotdl():
         or result.returncode != 0
     ):
 
+        logger.error(
+            "pip bootstrap failed."
+        )
+
         return False
 
     logger.info(
@@ -929,6 +956,10 @@ def install_spotdl():
         or result.returncode != 0
     ):
 
+        logger.error(
+            "yt-dlp installation failed."
+        )
+
         return False
 
     logger.info(
@@ -952,6 +983,10 @@ def install_spotdl():
         result is None
         or result.returncode != 0
     ):
+
+        logger.error(
+            "yt-dlp-ejs installation failed."
+        )
 
         return False
 
@@ -1033,7 +1068,10 @@ def install_bgutil():
     if BGUTIL_DIR.exists():
 
         try:
-            shutil.rmtree(BGUTIL_DIR)
+            shutil.rmtree(
+                BGUTIL_DIR
+            )
+
         except Exception as exc:
 
             logger.exception(
@@ -1094,6 +1132,43 @@ def install_bgutil():
 def install_bgutil_dependencies():
 
     if not BGUTIL_SERVER_DIR.exists():
+        return False
+
+    if not DENO_BIN.exists():
+
+        logger.error(
+            "Deno is missing. Cannot install bgutil dependencies."
+        )
+
+        return False
+
+    if not os.access(
+        DENO_BIN,
+        os.X_OK,
+    ):
+
+        logger.error(
+            "Deno is not executable."
+        )
+
+        return False
+
+    result = run_command(
+        [
+            str(DENO_BIN),
+            "--version",
+        ],
+        timeout=30,
+    )
+
+    if (
+        result is None
+        or result.returncode != 0
+    ):
+
+        logger.error(
+            "Deno verification failed."
+        )
 
         return False
 
@@ -1109,6 +1184,10 @@ def install_bgutil_dependencies():
         )
 
         return True
+
+    logger.info(
+        "Installing bgutil Deno dependencies..."
+    )
 
     result = run_command(
         [
@@ -1132,7 +1211,9 @@ def install_bgutil_dependencies():
 
         return False
 
-    return BGUTIL_NODE_MODULES.exists()
+    return (
+        BGUTIL_NODE_MODULES.exists()
+    )
 
 
 # ============================================================
@@ -1151,6 +1232,7 @@ def is_bgutil_server_running():
             return response.status == 200
 
     except Exception:
+
         return False
 
 
@@ -1174,6 +1256,9 @@ def start_bgutil_server():
         return False
 
     if not BGUTIL_NODE_MODULES.exists():
+        return False
+
+    if not DENO_BIN.exists():
         return False
 
     command = [
@@ -1260,6 +1345,10 @@ def start_bgutil_server():
             return False
 
         time.sleep(1)
+
+    logger.error(
+        "bgutil server did not become ready."
+    )
 
     return False
 
@@ -1417,14 +1506,18 @@ def check_youtube_clients():
 
     results = {}
 
-    results["mweb"] = test_real_youtube_download(
-        "mweb",
-        YOUTUBE_MWEB_ARGS,
+    results["mweb"] = (
+        test_real_youtube_download(
+            "mweb",
+            YOUTUBE_MWEB_ARGS,
+        )
     )
 
-    results["tv"] = test_real_youtube_download(
-        "tv",
-        YOUTUBE_TV_ARGS,
+    results["tv"] = (
+        test_real_youtube_download(
+            "tv",
+            YOUTUBE_TV_ARGS,
+        )
     )
 
     return results
@@ -1536,7 +1629,10 @@ def acquire_bot_lock():
 # TELEGRAM START
 # ============================================================
 
-def telegram_start(update, context):
+def telegram_start(
+    update,
+    context,
+):
 
     try:
 
@@ -1548,6 +1644,7 @@ def telegram_start(update, context):
         )
 
     except Exception:
+
         logger.exception(
             "Telegram /start error."
         )
@@ -1557,7 +1654,10 @@ def telegram_start(update, context):
 # TELEGRAM HELP
 # ============================================================
 
-def telegram_help(update, context):
+def telegram_help(
+    update,
+    context,
+):
 
     try:
 
@@ -1566,6 +1666,7 @@ def telegram_help(update, context):
         )
 
     except Exception:
+
         logger.exception(
             "Telegram /help error."
         )
@@ -1575,7 +1676,9 @@ def telegram_help(update, context):
 # FIND AUDIO
 # ============================================================
 
-def find_audio_file(output_dir: Path):
+def find_audio_file(
+    output_dir: Path,
+):
 
     extensions = {
         ".mp3",
@@ -1597,7 +1700,10 @@ def find_audio_file(output_dir: Path):
         if not path.is_file():
             continue
 
-        if path.suffix.lower() not in extensions:
+        if (
+            path.suffix.lower()
+            not in extensions
+        ):
             continue
 
         try:
@@ -1606,6 +1712,7 @@ def find_audio_file(output_dir: Path):
                 continue
 
         except Exception:
+
             continue
 
         files.append(path)
@@ -1625,11 +1732,15 @@ def find_audio_file(output_dir: Path):
 # BUILD YT-DLP ARGS
 # ============================================================
 
-def build_yt_dlp_args(client_name: str):
+def build_yt_dlp_args(
+    client_name: str,
+):
 
     if client_name == "tv":
 
-        extractor_args = YOUTUBE_TV_ARGS
+        extractor_args = (
+            YOUTUBE_TV_ARGS
+        )
 
         return (
             "--no-update "
@@ -1642,7 +1753,9 @@ def build_yt_dlp_args(client_name: str):
             f'--extractor-args "{extractor_args}"'
         )
 
-    extractor_args = YOUTUBE_MWEB_ARGS
+    extractor_args = (
+        YOUTUBE_MWEB_ARGS
+    )
 
     return (
         "--no-update "
@@ -1701,8 +1814,10 @@ def download_song(
             client_name,
         )
 
-        yt_dlp_args = build_yt_dlp_args(
-            client_name
+        yt_dlp_args = (
+            build_yt_dlp_args(
+                client_name
+            )
         )
 
         command = [
@@ -1786,7 +1901,10 @@ def download_song(
 # TELEGRAM MESSAGE
 # ============================================================
 
-def telegram_message(update, context):
+def telegram_message(
+    update,
+    context,
+):
 
     message = update.effective_message
 
@@ -1800,12 +1918,17 @@ def telegram_message(update, context):
     if not text:
         return
 
-    if "open.spotify.com/track/" not in text:
+    if (
+        "open.spotify.com/track/"
+        not in text
+    ):
 
         try:
+
             message.reply_text(
                 "لطفاً لینک آهنگ Spotify را ارسال کن."
             )
+
         except Exception:
             pass
 
@@ -1819,8 +1942,10 @@ def telegram_message(update, context):
 
     try:
 
-        status_message = message.reply_text(
-            "⏳ در حال دانلود آهنگ..."
+        status_message = (
+            message.reply_text(
+                "⏳ در حال دانلود آهنگ..."
+            )
         )
 
     except Exception:
@@ -1844,9 +1969,11 @@ def telegram_message(update, context):
             if status_message:
 
                 try:
+
                     status_message.edit_text(
                         "❌ دانلود انجام نشد یا فایل صوتی پیدا نشد."
                     )
+
                 except Exception:
                     pass
 
@@ -1855,9 +1982,11 @@ def telegram_message(update, context):
         if status_message:
 
             try:
+
                 status_message.edit_text(
                     "📤 دانلود تمام شد؛ در حال ارسال..."
                 )
+
             except Exception:
                 pass
 
@@ -1883,7 +2012,9 @@ def telegram_message(update, context):
                 pass
 
         try:
-            shutil.rmtree(output_dir)
+            shutil.rmtree(
+                output_dir
+            )
         except Exception:
             pass
 
@@ -1897,9 +2028,11 @@ def telegram_message(update, context):
         if status_message:
 
             try:
+
                 status_message.edit_text(
                     "❌ هنگام دانلود یا ارسال آهنگ خطایی رخ داد."
                 )
+
             except Exception:
                 pass
 
@@ -1948,7 +2081,9 @@ def start_telegram_bot():
             use_context=True,
         )
 
-        dispatcher = updater.dispatcher
+        dispatcher = (
+            updater.dispatcher
+        )
 
         dispatcher.add_handler(
             CommandHandler(
@@ -2003,6 +2138,14 @@ def check_warp():
     logger.info(
         "Checking WARP proxy..."
     )
+
+    if not warp_proxy_available():
+
+        logger.warning(
+            "WARP SOCKS5 listener is not available."
+        )
+
+        return False
 
     try:
 
@@ -2087,12 +2230,8 @@ def initialize():
         "========================================"
     )
 
-    # IMPORTANT:
-    # Configure proxy BEFORE any network operation.
-    configure_warp_proxy()
-
     # --------------------------------------------------------
-    # Environment
+    # Environment and directories
     # --------------------------------------------------------
 
     configure_environment()
@@ -2101,25 +2240,36 @@ def initialize():
     # WARP
     # --------------------------------------------------------
 
-    warp_ok = check_warp()
+    warp_ok = configure_warp_proxy()
 
     if warp_ok:
 
-        logger.info(
-            "WARP: CONNECTED"
-        )
+        if check_warp():
+
+            logger.info(
+                "WARP: CONNECTED"
+            )
+
+        else:
+
+            logger.warning(
+                "WARP listener exists but WARP test failed."
+            )
 
     else:
 
         logger.warning(
-            "WARP: NOT VERIFIED"
+            "WARP unavailable. "
+            "Continuing with direct network."
         )
 
     # --------------------------------------------------------
     # Deno
     # --------------------------------------------------------
 
-    if not install_deno():
+    deno_ok = install_deno()
+
+    if not deno_ok:
 
         logger.error(
             "Deno installation FAILED."
@@ -2129,7 +2279,9 @@ def initialize():
     # FFmpeg
     # --------------------------------------------------------
 
-    if not install_ffmpeg():
+    ffmpeg_ok = install_ffmpeg()
+
+    if not ffmpeg_ok:
 
         logger.error(
             "FFmpeg installation FAILED."
@@ -2139,25 +2291,48 @@ def initialize():
     # spotDL
     # --------------------------------------------------------
 
-    if not install_spotdl():
+    spotdl_ok = install_spotdl()
+
+    if not spotdl_ok:
 
         logger.error(
             "spotDL installation FAILED."
         )
 
     # --------------------------------------------------------
-    # bgutil
+    # bgutil source
     # --------------------------------------------------------
 
-    bgutil_source_ok = install_bgutil()
+    bgutil_source_ok = False
+
+    if deno_ok and spotdl_ok:
+
+        bgutil_source_ok = (
+            install_bgutil()
+        )
+
+    else:
+
+        logger.error(
+            "Skipping bgutil source because "
+            "Deno or spotDL is unavailable."
+        )
+
+    # --------------------------------------------------------
+    # bgutil dependencies
+    # --------------------------------------------------------
 
     bgutil_dependencies_ok = False
 
-    if bgutil_source_ok:
+    if bgutil_source_ok and deno_ok:
 
         bgutil_dependencies_ok = (
             install_bgutil_dependencies()
         )
+
+    # --------------------------------------------------------
+    # Environment again
+    # --------------------------------------------------------
 
     configure_environment()
 
@@ -2180,19 +2355,22 @@ def initialize():
     if (
         bgutil_source_ok
         and bgutil_dependencies_ok
-        and DENO_BIN.exists()
+        and deno_ok
+        and ytdlp_ok
     ):
 
-        bgutil_ok = start_bgutil_server()
+        bgutil_ok = (
+            start_bgutil_server()
+        )
 
     # --------------------------------------------------------
-    # bgutil metadata
+    # bgutil plugin test
     # --------------------------------------------------------
 
     if (
         ytdlp_ok
         and bgutil_ok
-        and DENO_BIN.exists()
+        and deno_ok
     ):
 
         check_bgutil_plugin()
@@ -2206,10 +2384,19 @@ def initialize():
     if (
         ytdlp_ok
         and bgutil_ok
-        and DENO_BIN.exists()
+        and deno_ok
     ):
 
-        youtube_results = check_youtube_clients()
+        youtube_results = (
+            check_youtube_clients()
+        )
+
+    else:
+
+        logger.warning(
+            "YouTube tests skipped because "
+            "bgutil/yt-dlp/Deno is not ready."
+        )
 
     # --------------------------------------------------------
     # Telegram
@@ -2217,12 +2404,55 @@ def initialize():
 
     start_telegram_bot()
 
+    # --------------------------------------------------------
+    # Final status
+    # --------------------------------------------------------
+
     logger.info(
         "========================================"
     )
 
     logger.info(
         "SPMA initialization finished"
+    )
+
+    logger.info(
+        "Deno = %s",
+        "OK" if deno_ok else "FAILED",
+    )
+
+    logger.info(
+        "FFmpeg = %s",
+        "OK" if ffmpeg_ok else "FAILED",
+    )
+
+    logger.info(
+        "spotDL = %s",
+        "OK" if spotdl_ok else "FAILED",
+    )
+
+    logger.info(
+        "yt-dlp = %s",
+        "OK" if ytdlp_ok else "FAILED",
+    )
+
+    logger.info(
+        "bgutil source = %s",
+        "OK" if bgutil_source_ok else "FAILED",
+    )
+
+    logger.info(
+        "bgutil dependencies = %s",
+        (
+            "OK"
+            if bgutil_dependencies_ok
+            else "FAILED"
+        ),
+    )
+
+    logger.info(
+        "bgutil server = %s",
+        "OK" if bgutil_ok else "FAILED",
     )
 
     logger.info(
@@ -2318,11 +2548,30 @@ st.write(
     WARP_PROXY,
 )
 
+st.write(
+    "Deno:",
+    "OK" if DENO_BIN.exists() else "FAILED",
+)
 
-# ============================================================
-# KEEP PROCESS ALIVE
-# ============================================================
+st.write(
+    "FFmpeg:",
+    "OK" if FFMPEG_BIN.exists() else "FAILED",
+)
 
-while True:
+st.write(
+    "yt-dlp:",
+    (
+        "OK"
+        if SPOTDL_PYTHON.exists()
+        else "FAILED"
+    ),
+)
 
-    time.sleep(3600)
+st.write(
+    "bgutil:",
+    (
+        "RUNNING"
+        if is_bgutil_server_running()
+        else "NOT RUNNING"
+    ),
+)
