@@ -38,13 +38,65 @@ def configure_warp_proxy():
         127.0.0.1:40000
     """
 
-    os.environ["ALL_PROXY"] = WARP_PROXY
-    os.environ["HTTP_PROXY"] = WARP_PROXY
-    os.environ["HTTPS_PROXY"] = WARP_PROXY
+def warp_proxy_available():
+    import socket
 
-    os.environ["all_proxy"] = WARP_PROXY
-    os.environ["http_proxy"] = WARP_PROXY
-    os.environ["https_proxy"] = WARP_PROXY
+    try:
+        sock = socket.create_connection(
+            ("127.0.0.1", 40000),
+            timeout=2,
+        )
+        sock.close()
+        return True
+
+    except Exception:
+        return False
+
+
+def configure_warp_proxy():
+
+    if warp_proxy_available():
+
+        os.environ["ALL_PROXY"] = WARP_PROXY
+        os.environ["HTTP_PROXY"] = WARP_PROXY
+        os.environ["HTTPS_PROXY"] = WARP_PROXY
+
+        os.environ["all_proxy"] = WARP_PROXY
+        os.environ["http_proxy"] = WARP_PROXY
+        os.environ["https_proxy"] = WARP_PROXY
+
+        os.environ["NO_PROXY"] = (
+            "127.0.0.1,"
+            "localhost,"
+            "0.0.0.0"
+        )
+
+        os.environ["no_proxy"] = os.environ["NO_PROXY"]
+
+        logger.info(
+            "WARP SOCKS5 detected on 127.0.0.1:40000"
+        )
+
+        return True
+
+    # Remove broken proxy variables.
+    for key in [
+        "ALL_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+    ]:
+
+        os.environ.pop(key, None)
+
+    logger.warning(
+        "WARP SOCKS5 is NOT available. "
+        "Using direct network connection."
+    )
+
+    return False
 
     # Avoid accidentally bypassing local services.
     os.environ["NO_PROXY"] = (
